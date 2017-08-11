@@ -1,0 +1,159 @@
+#!/usr/bin/env python
+
+from collections import namedtuple
+
+class catlog_issues:
+  """ to store all catalog issues found in gpcheckcat.log """
+
+  def __init__(self, dbname):
+    self.dbname = dbname
+
+    self.miss_extra_res = []
+
+miss_extra = namedtuple('miss_extra', 'relname result')
+
+class me_pg_attr:
+  """used to store missing/extra entries for pg_attribute"""
+
+  def __init__(self, attrelid, attname, exists, segids):
+    self.attrelid = attrelid
+    self.attname = attname
+    self.exists = exists
+    self.segids = segids
+
+class me_pg_class:
+  """used to store missing/extra entries for pg_class"""
+
+  def __init__(self, oid, exists, segids):
+    self.oid = oid
+    self.exists = exists
+    self.segids = segids
+
+mex_pg_class = namedtuple('mex_pg_class', 'oid exists segids')
+mex_pg_attribute = namedtuple('mex_pg_attribute', 'attrelid attname exists segids')
+
+current_db = None
+current_rel = None
+current_test = None
+
+dblist = []
+all_cat_issues = {}
+cat_issues = {}
+current_test_issues = {}
+# pg_class_issues = []
+# pg_attribute_issues = []
+issues_count = 0
+
+f1 = open("gpcheckcat_20170224.log", 'r')
+gpcheckcatlog = list(f1.readlines())
+f1.close()
+
+total_lines = len(gpcheckcatlog)
+print "total lines: %d" % total_lines
+
+idx = 0
+while idx < total_lines:
+  line = gpcheckcatlog[idx]
+
+  if 'Connected as user' in line:
+    if len(cat_issues) > 0 and current_db != None:
+      all_cat_issues[current_db] = cat_issues
+
+    current_db = line.split('\'')[3]
+    print current_db
+    dblist.append(current_db)
+    cat_issues = {}
+  elif 'Performing test' in line:
+
+    if len(current_test_issues) > 0 and current_test != None:
+      cat_issues[current_test] = current_test_issues
+
+    current_test = None
+    current_test_issues = {}
+
+    if 'missing_extraneous' in line:
+      current_test = 'missing_extraneous'
+    elif 'foreign_key' in line:
+      current_test = 'foreign_key'
+    elif 'inconsistent' in line:
+      current_test = 'inconsistent'
+    elif 'persistent' in line:
+      current_test = 'persistent'
+    elif 'pgclass' in line:
+      current_test = 'pgclass'
+    else:
+      current_test = None
+
+  elif '[INFO]:-[FAIL]' in line:
+    #print "test %s, line num: %d\n" % (current_test, idx + 1)
+
+    current_issues = []
+    next_line = gpcheckcatlog[idx + 1]
+    if current_test in ('missing_extraneous', 'foreign_key', 'pgclass'):
+      temp_list = next_line.split('-')[2].split()
+      current_rel = temp_list[0]
+      issues_count = int(temp_list[2])
+    elif current_test == 'persistent':
+      temp_list = next_line.split('-')[2].split()
+      current_rel = " ".join(v for v in temp_list[0:3])
+      issues_count = int(temp_list[4])
+    else:
+      current_rel = None
+      issues_count = 0
+
+    print "test: {0}, rel: {1}, issues: {2}".format(current_test,current_rel,issues_count)
+
+    idx = idx+3 #to skip line "exists | segids"
+    idx1 = idx+issues_count
+    while idx < idx1:
+      if current_test == 'missing_extraneous':
+         rec = [x.strip(' ') for x in gpcheckcatlog[idx].split('|')]
+         if current_rel == 'pg_attribute':
+           # pg_attribute_issues.append(mex_pg_attribute(rec[0], rec[1], rec[2], rec[3].translate(None, '{}')))
+           current_issues.append(mex_pg_attribute(rec[0], rec[1], rec[2], rec[3].replace('{', '').replace('}', '').split(',')))
+         elif current_rel == 'pg_class':
+           #print rec[0], rec[1], rec[2]
+           # pg_class_issues.append(me_pg_class(rec[0], rec[1], rec[2].translate(None,'{}')))
+           # pg_class_issues.append(me_pg_class(rec[0], rec[1], tuple(rec[2].replace('{', '').replace('}','').split(','))))
+           current_issues.append(mex_pg_class(rec[0], rec[1], rec[2].replace('{', '').replace('}','').split(',')))
+         else:
+           break
+      else:
+        break
+
+      idx += 1
+
+    if len(current_issues) > 0 and issues_count > 0:
+      # print "add current issue for rel {0}\n {1}\n".format(current_rel, current_issues)
+      current_test_issues[current_rel] = current_issues
+
+      issues_count = 0
+      current_rel = None
+      current_issues = []
+
+    #restore idx
+    idx = idx1
+    continue  # skip next incr of idx
+
+  #print ("current_issues len: %d" % len(current_issues))
+  idx += 1
+
+# print dblist
+
+cat_issues = all_cat_issues['pgsdwh']
+current_test_issues = cat_issues['missing_extraneous']
+current_issues = current_test_issues['pg_class']
+
+#print current_test_issues
+#print current_issues
+
+print "pg_class has %d issues" % len(current_issues)
+for x in current_issues:
+  print x.oid, x.exists, x.segids
+
+current_issues = current_test_issues['pg_attribute']
+print "pg_attribute has %d issues" % len(current_issues)
+for x in current_issues:
+  print x.attrelid, x.attname, x.exists, x.segids
+
+#f1.close()
